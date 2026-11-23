@@ -268,6 +268,8 @@ pub struct Keymaps {
     state: Vec<KeyEvent>,
     /// Stores the sticky node if one is activated.
     pub sticky: Option<KeyTrieNode>,
+    /// Stores a one-shot node activated programmatically (e.g. via `window_mode`).
+    pending_node: Option<KeyTrieNode>,
 }
 
 impl Keymaps {
@@ -276,7 +278,12 @@ impl Keymaps {
             map,
             state: Vec::new(),
             sticky: None,
+            pending_node: None,
         }
+    }
+
+    pub fn set_pending_node(&mut self, node: KeyTrieNode) {
+        self.pending_node = Some(node);
     }
 
     pub fn map(&self) -> DynGuard<HashMap<Mode, KeyTrie>> {
@@ -310,17 +317,22 @@ impl Keymaps {
         let keymap = &keymaps[&mode];
 
         if key!(Esc) == key {
-            if !self.state.is_empty() {
+            if !self.state.is_empty() || self.pending_node.is_some() {
                 // Note that Esc is not included here
+                self.pending_node = None;
                 return KeymapResult::Cancelled(self.state.drain(..).collect());
             }
             self.sticky = None;
         }
 
         let first = self.state.first().unwrap_or(&key);
+        let pending_node = self.pending_node.take();
         let trie_node = match self.sticky {
             Some(ref trie) => Cow::Owned(KeyTrie::Node(trie.clone())),
-            None => Cow::Borrowed(keymap),
+            None => match self.sticky {
+                Some(ref trie) => Cow::Owned(KeyTrie::Node(trie.clone())),
+                None => Cow::Borrowed(keymap),
+            },
         };
 
         let trie = match trie_node.search(&[*first]) {
@@ -330,7 +342,12 @@ impl Keymaps {
             Some(KeyTrie::Sequence(ref cmds)) => {
                 return KeymapResult::MatchedSequence(cmds.clone());
             }
-            None => return KeymapResult::NotFound,
+            None => {
+                if pending_node.is_some() {
+                    return KeymapResult::Cancelled(vec![key]);
+                }
+                return KeymapResult::NotFound;
+            }
             Some(t) => t,
         };
 
@@ -340,6 +357,8 @@ impl Keymaps {
                 if map.is_sticky {
                     self.state.clear();
                     self.sticky = Some(map.clone());
+                } else {
+                    self.pending_node = pending_node;
                 }
                 KeymapResult::Pending(map.clone())
             }

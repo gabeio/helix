@@ -427,6 +427,7 @@ impl MappableCommand {
         normal_mode, "Enter normal mode",
         select_mode, "Enter selection extend mode",
         exit_select_mode, "Exit selection mode",
+        window_mode, "Enter window mode",
         goto_definition, "Goto definition",
         goto_declaration, "Goto declaration",
         add_newline_above, "Add newline above",
@@ -4132,6 +4133,89 @@ fn exit_select_mode(cx: &mut Context) {
     if cx.editor.mode == Mode::Select {
         cx.editor.mode = Mode::Normal;
     }
+}
+
+fn default_window_node() -> crate::keymap::KeyTrieNode {
+    use crate::keymap::{KeyTrie, KeyTrieNode};
+    use ::indexmap::IndexMap;
+
+    let mut new_split = IndexMap::new();
+    for key in ["C-s", "s"] {
+        new_split.insert(
+            key.parse().unwrap(),
+            KeyTrie::MappableCommand(MappableCommand::hsplit_new),
+        );
+    }
+    for key in ["C-v", "v"] {
+        new_split.insert(
+            key.parse().unwrap(),
+            KeyTrie::MappableCommand(MappableCommand::vsplit_new),
+        );
+    }
+
+    let mut map = IndexMap::new();
+    let entries: &[(&[&str], MappableCommand)] = &[
+        (&["C-w", "w"], MappableCommand::rotate_view),
+        (&["C-s", "s"], MappableCommand::hsplit),
+        (&["C-v", "v"], MappableCommand::vsplit),
+        (&["C-t", "t"], MappableCommand::transpose_view),
+        (&["f"], MappableCommand::goto_file_hsplit),
+        (&["F"], MappableCommand::goto_file_vsplit),
+        (&["C-q", "q"], MappableCommand::wclose),
+        (&["C-o", "o"], MappableCommand::wonly),
+        (&["C-h", "h", "left"], MappableCommand::jump_view_left),
+        (&["C-j", "j", "down"], MappableCommand::jump_view_down),
+        (&["C-k", "k", "up"], MappableCommand::jump_view_up),
+        (&["C-l", "l", "right"], MappableCommand::jump_view_right),
+        (&["L"], MappableCommand::swap_view_right),
+        (&["K"], MappableCommand::swap_view_up),
+        (&["H"], MappableCommand::swap_view_left),
+        (&["J"], MappableCommand::swap_view_down),
+    ];
+    for (keys, cmd) in entries {
+        for key in *keys {
+            map.insert(key.parse().unwrap(), KeyTrie::MappableCommand(cmd.clone()));
+        }
+    }
+    map.insert(
+        "n".parse().unwrap(),
+        KeyTrie::Node(KeyTrieNode::new("New split scratch buffer", new_split)),
+    );
+    KeyTrieNode::new("Window", map)
+}
+
+fn window_mode(cx: &mut Context) {
+    let count = cx.count;
+    let register = cx.register;
+
+    cx.callback.push(Box::new(
+        move |compositor: &mut Compositor, cx: &mut compositor::Context| {
+            let Some(editor_view) = compositor.find::<ui::EditorView>() else {
+                return;
+            };
+            let cw: KeyEvent = "C-w".parse().unwrap();
+            let space: KeyEvent = "space".parse().unwrap();
+            let w: KeyEvent = "w".parse().unwrap();
+
+            let node = {
+                let map = editor_view.keymaps.map();
+                map.get(&cx.editor.mode)
+                    .and_then(|t| t.search(&[cw]))
+                    .or_else(|| map.get(&Mode::Normal).and_then(|t| t.search(&[cw])))
+                    .or_else(|| map.get(&Mode::Normal).and_then(|t| t.search(&[space, w])))
+                    .and_then(|t| match t {
+                        crate::keymap::KeyTrie::Node(n) => Some(n.clone()),
+                        _ => None,
+                    })
+            }
+            .unwrap_or_else(default_window_node);
+
+            cx.editor.count = count;
+            cx.editor.selected_register = register;
+            cx.editor.autoinfo = Some(node.infobox());
+            editor_view.keymaps.set_pending_node(node);
+        },
+    ));
 }
 
 fn goto_first_diag(cx: &mut Context) {
